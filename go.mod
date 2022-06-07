@@ -1,7 +1,7 @@
 module github.com/osrg/gobgp/v3
 
 require (
-	github.com/BurntSushi/toml v1.0.0
+	github.com/BurntSushi/toml v1.1.0
 	github.com/coreos/go-systemd/v22 v22.3.2
 	github.com/dgryski/go-farm v0.0.0-20200201041132-a6ae2369ad13
 	github.com/eapache/channels v1.1.0
