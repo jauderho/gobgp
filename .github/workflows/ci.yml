@@ -103,7 +103,7 @@ jobs:
           docker save gobgp-oq > gobgp-oq.tar
 
       - name: upload image file
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v3
         with:
           name: artifact
           path: |
