@@ -1036,9 +1036,8 @@ func MarshalNLRI(value bgp.AddrPrefixInterface) (*apb.Any, error) {
 				return nil, err
 			}
 			nlri = &api.MUPInterworkSegmentDiscoveryRoute{
-				Rd:           rd,
-				PrefixLength: uint32(r.PrefixLength),
-				Prefix:       r.Prefix.String(),
+				Rd:     rd,
+				Prefix: r.Prefix.String(),
 			}
 		case *bgp.MUPDirectSegmentDiscoveryRoute:
 			rd, err := MarshalRD(r.RD)
@@ -1653,7 +1652,8 @@ func NewTunnelEncapAttributeFromNative(a *bgp.PathAttributeTunnelEncap) (*api.Tu
 				if err != nil {
 					return nil, err
 				}
-				subTlv = t
+				subTlv = &api.TunnelEncapSubTLVSRBindingSID{
+					Bsid: t}
 				// TODO (sbezverk) Add processing of SRv6 Binding SID when it gets assigned ID
 			case *bgp.TunnelEncapSubTLVSRCandidatePathName:
 				subTlv = &api.TunnelEncapSubTLVSRCandidatePathName{
