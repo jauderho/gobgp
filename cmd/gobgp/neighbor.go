@@ -96,10 +96,18 @@ func getNeighbors(address string, enableAdv bool) ([]*api.Peer, error) {
 	return l, err
 }
 
-func getASN(p *api.Peer) string {
+func getRemoteASN(p *api.Peer) string {
 	asn := "*"
 	if p.State.PeerAsn > 0 {
 		asn = fmt.Sprint(p.State.PeerAsn)
+	}
+	return asn
+}
+
+func getLocalASN(p *api.Peer) string {
+	asn := "*"
+	if p.State.LocalAsn > 0 {
+		asn = fmt.Sprint(p.State.LocalAsn)
 	}
 	return asn
 }
@@ -181,7 +189,7 @@ func showNeighbors(vrf string) error {
 		} else if j := len(n.State.NeighborAddress); j > maxaddrlen {
 			maxaddrlen = j
 		}
-		if l := len(getASN(n)); l > maxaslen {
+		if l := len(getRemoteASN(n)); l > maxaslen {
 			maxaslen = l
 		}
 		timeStr := "never"
@@ -236,7 +244,7 @@ func showNeighbors(vrf string) error {
 			neigh = n.Conf.NeighborInterface
 		}
 		received, accepted, _, _ := counter(n)
-		fmt.Printf(format, neigh, getASN(n), timedelta[i], formatFsm(n.State.AdminState, n.State.SessionState), fmt.Sprint(received), fmt.Sprint(accepted))
+		fmt.Printf(format, neigh, getRemoteASN(n), timedelta[i], formatFsm(n.State.AdminState, n.State.SessionState), fmt.Sprint(received), fmt.Sprint(accepted))
 	}
 
 	return nil
@@ -255,7 +263,7 @@ func showNeighbor(args []string) error {
 		return nil
 	}
 
-	fmt.Printf("BGP neighbor is %s, remote AS %s", p.State.NeighborAddress, getASN(p))
+	fmt.Printf("BGP neighbor is %s, remote AS %s", p.State.NeighborAddress, getRemoteASN(p))
 
 	if p.RouteReflector.RouteReflectorClient {
 		fmt.Printf(", route-reflector-client\n")
@@ -277,6 +285,7 @@ func showNeighbor(args []string) error {
 		fmt.Print("\n")
 	}
 	fmt.Printf("  BGP OutQ = %d, Flops = %d\n", p.State.Queues.Output, p.State.Flops)
+	fmt.Printf("  Local address is %s, local ASN: %s\n", p.Transport.LocalAddress, getLocalASN(p))
 	fmt.Printf("  Hold time is %d, keepalive interval is %d seconds\n", int(p.Timers.State.NegotiatedHoldTime), int(p.Timers.State.KeepaliveInterval))
 	fmt.Printf("  Configured hold time is %d, keepalive interval is %d seconds\n", int(p.Timers.Config.HoldTime), int(p.Timers.Config.KeepaliveInterval))
 
@@ -473,6 +482,16 @@ func showNeighbor(args []string) error {
 			if m := lookup(c, rcaps); m != nil {
 				fmt.Println("      Remote:")
 				fmt.Printf("         name: %s, domain: %s\n", m.(*bgp.CapFQDN).HostName, m.(*bgp.CapFQDN).DomainName)
+			}
+		case bgp.BGP_CAP_SOFT_VERSION:
+			fmt.Printf("    %s:\t%s\n", c.Code(), support)
+			if m := lookup(c, lcaps); m != nil {
+				fmt.Println("      Local:")
+				fmt.Printf("         %s\n", m.(*bgp.CapSoftwareVersion).SoftwareVersion)
+			}
+			if m := lookup(c, rcaps); m != nil {
+				fmt.Println("      Remote:")
+				fmt.Printf("         %s\n", m.(*bgp.CapSoftwareVersion).SoftwareVersion)
 			}
 		default:
 			fmt.Printf("    %s:\t%s\n", c.Code(), support)
@@ -844,8 +863,6 @@ func showNeighborRib(r string, name string, args []string) error {
 	switch rf {
 	case bgp.RF_IPv4_MPLS, bgp.RF_IPv6_MPLS, bgp.RF_IPv4_VPN, bgp.RF_IPv6_VPN, bgp.RF_EVPN:
 		showLabel = true
-	case bgp.RF_MUP_IPv4, bgp.RF_MUP_IPv6:
-		showMUP = true
 	}
 
 	var filter []*api.TableLookupPrefix
@@ -855,7 +872,11 @@ func showNeighborRib(r string, name string, args []string) error {
 		case bgp.RF_EVPN:
 			// Uses target as EVPN Route Type string
 		case bgp.RF_MUP_IPv4, bgp.RF_MUP_IPv6:
-			// Uses target as MUP Route Type string
+			// Uses target as MUP Route Type string or route key
+			// Only t1st has MUP specific columns
+			if target == "t1st" {
+				showMUP = true
+			}
 		default:
 			if _, _, err = parseCIDRorIP(target); err != nil {
 				return err
