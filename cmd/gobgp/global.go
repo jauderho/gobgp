@@ -1295,6 +1295,265 @@ func parseMUPArgs(args []string, afi uint16, nexthop string) (bgp.AddrPrefixInte
 	return nil, nil, nil, fmt.Errorf("invalid subtype. expect [isd|dsd|t1st|t2st] but %s", subtype)
 }
 
+func parseLsLinkProtocol(args []string, afi uint16) (bgp.AddrPrefixInterface, *bgp.PathAttributeLs, error) {
+	if len(args) < 2 {
+		return nil, nil, fmt.Errorf("lack of protocolType")
+	}
+	protocolType := args[1]
+	switch protocolType {
+	// TODO case ospf/isis
+	case "bgp":
+		return parseLsLinkNLRIType(args, afi)
+	}
+	return nil, nil, fmt.Errorf("invalid protocolType. expect [bgp] but %s", protocolType)
+}
+
+func parseLsLinkNLRIType(args []string, afi uint16) (bgp.AddrPrefixInterface, *bgp.PathAttributeLs, error) {
+	// Format:
+	// <ip prefix> identifier <identifier> asn <asn> bgp-ls-id <bgp-ls-id> ospf
+	req := 26
+	if len(args) < req {
+		return nil, nil, fmt.Errorf("%d args required at least, but got %d", req, len(args))
+	}
+
+	m, err := extractReserved(args, map[string]int{
+		"identifier":                      paramSingle,
+		"local-asn":                       paramSingle,
+		"local-bgp-ls-id":                 paramSingle,
+		"local-bgp-router-id":             paramSingle,
+		"local-bgp-confederation-member":  paramSingle,
+		"remote-asn":                      paramSingle,
+		"remote-bgp-ls-id":                paramSingle,
+		"remote-bgp-router-id":            paramSingle,
+		"remote-bgp-confederation-member": paramSingle,
+		"ipv4-interface-address":          paramSingle,
+		"ipv4-neighbor-address":           paramSingle,
+		"ipv6-interface-address":          paramSingle,
+		"ipv6-neighbor-address":           paramSingle,
+		"sid":                             paramSingle,
+		"sid-type":                        paramSingle,
+		"v-flag":                          paramFlag,
+		"l-flag":                          paramFlag,
+		"b-flag":                          paramFlag,
+		"p-flag":                          paramFlag,
+		"weight":                          paramSingle,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+
+	identifier, err := strconv.ParseUint(m["identifier"][0], 10, 64)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	localAsn, err := strconv.ParseUint(m["local-asn"][0], 10, 64)
+	if err != nil {
+		return nil, nil, err
+
+	}
+	localBgpLsId, err := strconv.ParseUint(m["local-bgp-ls-id"][0], 10, 64)
+	if err != nil {
+		return nil, nil, err
+
+	}
+	localBgpConfederationMember, err := strconv.ParseUint(m["local-bgp-confederation-member"][0], 10, 64)
+	if err != nil {
+		return nil, nil, err
+
+	}
+	lnd := &bgp.LsNodeDescriptor{
+		Asn:                    uint32(localAsn),
+		BGPLsID:                uint32(localBgpLsId),
+		OspfAreaID:             0,
+		PseudoNode:             false,
+		IGPRouterID:            "",
+		BGPRouterID:            net.ParseIP(m["local-bgp-router-id"][0]),
+		BGPConfederationMember: uint32(localBgpConfederationMember),
+	}
+	RemoteAsn, err := strconv.ParseUint(m["remote-asn"][0], 10, 64)
+	if err != nil {
+		return nil, nil, err
+
+	}
+	RemoteBgpLsId, err := strconv.ParseUint(m["remote-bgp-ls-id"][0], 10, 64)
+	if err != nil {
+		return nil, nil, err
+
+	}
+	RemoteBgpConfederationMember, err := strconv.ParseUint(m["remote-bgp-confederation-member"][0], 10, 64)
+	if err != nil {
+		return nil, nil, err
+
+	}
+	rnd := &bgp.LsNodeDescriptor{
+		Asn:                    uint32(RemoteAsn),
+		BGPLsID:                uint32(RemoteBgpLsId),
+		OspfAreaID:             0,
+		PseudoNode:             false,
+		IGPRouterID:            "",
+		BGPRouterID:            net.ParseIP(m["remote-bgp-router-id"][0]),
+		BGPConfederationMember: uint32(RemoteBgpConfederationMember),
+	}
+
+	var interfaceAddrIPv4 net.IP
+	var neighborAddrIPv4 net.IP
+	var interfaceAddrIPv6 net.IP
+	var neighborAddrIPv6 net.IP
+
+	interfaceAddrIPv4 = net.ParseIP(m["ipv4-interface-address"][0]).To4()
+	neighborAddrIPv4 = net.ParseIP(m["ipv4-neighbor-address"][0]).To4()
+	interfaceAddrIPv6 = net.ParseIP(m["ipv6-interface-address"][0]).To16()
+	neighborAddrIPv6 = net.ParseIP(m["ipv6-neighbor-address"][0]).To16()
+
+	ld := &bgp.LsLinkDescriptor{
+		LinkLocalID:       new(uint32),
+		LinkRemoteID:      new(uint32),
+		InterfaceAddrIPv4: &interfaceAddrIPv4,
+		NeighborAddrIPv4:  &neighborAddrIPv4,
+		InterfaceAddrIPv6: &interfaceAddrIPv6,
+		NeighborAddrIPv6:  &neighborAddrIPv6,
+	}
+
+	lndTLV := bgp.NewLsTLVNodeDescriptor(lnd, bgp.LS_TLV_LOCAL_NODE_DESC)
+	rndTLV := bgp.NewLsTLVNodeDescriptor(rnd, bgp.LS_TLV_REMOTE_NODE_DESC)
+	ldTLV := bgp.NewLsLinkTLVs(ld)
+
+	sidTypeString := m["sid-type"][0]
+
+	sidtype := lsTLVTypeSelect(sidTypeString)
+
+	var peerNodeFlag uint8
+
+	if _, ok := m["v-flag"]; ok {
+		peerNodeFlag = peerNodeFlag | 0x80
+	}
+	if _, ok := m["l-flag"]; ok {
+		peerNodeFlag = peerNodeFlag | 0x40
+	}
+	if _, ok := m["b-flag"]; ok {
+		peerNodeFlag = peerNodeFlag | 0x20
+	}
+	if _, ok := m["p-flag"]; ok {
+		peerNodeFlag = peerNodeFlag | 0x10
+	}
+
+	lsTLVWeight, err := strconv.ParseUint(m["weight"][0], 10, 64)
+	if err != nil {
+		return nil, nil, err
+	}
+	lsTLVSid, err := strconv.ParseUint(m["sid"][0], 10, 64)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	const lsTlvLen = 7
+	const t = bgp.BGP_ATTR_TYPE_LS
+	const pathAttrHdrLen = 4
+	var tlvs []bgp.LsTLVInterface
+	length := uint16(pathAttrHdrLen + lsTlvLen)
+
+	switch sidtype {
+	case bgp.LS_TLV_PEER_NODE_SID:
+
+		lsTLV := &bgp.LsTLVPeerNodeSID{
+			LsTLV: bgp.LsTLV{
+				Type:   sidtype,
+				Length: uint16(lsTlvLen),
+			},
+			Flags:  peerNodeFlag,
+			Weight: uint8(lsTLVWeight),
+			SID:    uint32(lsTLVSid),
+		}
+		tlvs = append(tlvs, lsTLV)
+	case bgp.LS_TLV_ADJACENCY_SID:
+		lsTLV := &bgp.LsTLVAdjacencySID{
+			LsTLV: bgp.LsTLV{
+				Type:   sidtype,
+				Length: uint16(lsTlvLen),
+			},
+			Flags:  peerNodeFlag,
+			Weight: uint8(lsTLVWeight),
+			SID:    uint32(lsTLVSid),
+		}
+		tlvs = append(tlvs, lsTLV)
+	case bgp.LS_TLV_PEER_SET_SID:
+		lsTLV := &bgp.LsTLVPeerSetSID{
+			LsTLV: bgp.LsTLV{
+				Type:   sidtype,
+				Length: uint16(lsTlvLen),
+			},
+			Flags:  peerNodeFlag,
+			Weight: uint8(lsTLVWeight),
+			SID:    uint32(lsTLVSid),
+		}
+		tlvs = append(tlvs, lsTLV)
+	}
+
+	pathAttributeLs := &bgp.PathAttributeLs{
+		PathAttribute: bgp.PathAttribute{
+			Flags:  bgp.PathAttrFlags[t],
+			Type:   t,
+			Length: length,
+		},
+		TLVs: tlvs,
+	}
+	len := len(ldTLV)
+	var sum int
+	for i := 0; i < len; i++ {
+		sum += ldTLV[i].Len()
+	}
+
+	const CodeLen = 1
+	const topologyLen = 8
+	LsNLRIhdrlen := sum + lndTLV.Len() + rndTLV.Len() + topologyLen + CodeLen
+	lsNlri := bgp.LsNLRI{
+		NLRIType:   bgp.LS_NLRI_TYPE_NODE,
+		Length:     uint16(LsNLRIhdrlen),
+		ProtocolID: 7,
+		Identifier: identifier,
+	}
+	nlri := &bgp.LsAddrPrefix{
+		Type:   bgp.LS_NLRI_TYPE_NODE,
+		Length: 4,
+		NLRI: &bgp.LsLinkNLRI{
+			LsNLRI:         lsNlri,
+			LocalNodeDesc:  &lndTLV,
+			RemoteNodeDesc: &rndTLV,
+			LinkDesc:       ldTLV,
+		},
+	}
+	return nlri, pathAttributeLs, nil
+}
+
+func lsTLVTypeSelect(s string) bgp.LsTLVType {
+	switch s {
+	case "node":
+		return bgp.LS_TLV_PEER_NODE_SID
+	case "adj":
+		return bgp.LS_TLV_ADJACENCY_SID
+	case "set":
+		return bgp.LS_TLV_PEER_SET_SID
+	}
+
+	return bgp.LS_TLV_UNKNOWN
+
+}
+
+func parseLsArgs(args []string, afi uint16) (bgp.AddrPrefixInterface, *bgp.PathAttributeLs, error) {
+	if len(args) < 1 {
+		return nil, nil, fmt.Errorf("lack of nlriType")
+	}
+	nlriType := args[0]
+	switch nlriType {
+	case "link":
+		return parseLsLinkNLRIType(args, afi)
+		// TODO: case node / IPv4 Topology Prefix / IPv6 Topology Prefix / TE Policy / SRv6 SID
+	}
+
+	return nil, nil, fmt.Errorf("invalid nlriType. expect [link] but %s", nlriType)
+}
+
 func extractOrigin(args []string) ([]string, bgp.PathAttributeInterface, error) {
 	typ := bgp.BGP_ORIGIN_ATTR_TYPE_INCOMPLETE
 	for idx, arg := range args {
@@ -1536,6 +1795,7 @@ func parsePath(rf bgp.RouteFamily, args []string) (*api.Path, error) {
 	var nlri bgp.AddrPrefixInterface
 	var extcomms []string
 	var psid *bgp.PathAttributePrefixSID
+	var ls *bgp.PathAttributeLs
 	var err error
 	attrs := make([]bgp.PathAttributeInterface, 0, 1)
 
@@ -1686,11 +1946,16 @@ func parsePath(rf bgp.RouteFamily, args []string) (*api.Path, error) {
 		nlri, psid, extcomms, err = parseMUPArgs(args, bgp.AFI_IP, nexthop)
 	case bgp.RF_MUP_IPv6:
 		nlri, psid, extcomms, err = parseMUPArgs(args, bgp.AFI_IP6, nexthop)
+	case bgp.RF_LS:
+		nlri, ls, err = parseLsArgs(args, bgp.AFI_LS)
 	default:
 		return nil, fmt.Errorf("unsupported route family: %s", rf)
 	}
 	if err != nil {
 		return nil, err
+	}
+	if ls != nil {
+		attrs = append(attrs, ls)
 	}
 
 	if rf == bgp.RF_IPv4_UC && net.ParseIP(nexthop).To4() != nil {
@@ -1773,10 +2038,10 @@ func modPath(resource string, name, modtype string, args []string) error {
 		helpErrMap := map[bgp.RouteFamily]error{}
 		baseHelpMsgFmt := fmt.Sprintf(`error: %s
 usage: %s rib -a %%s %s <PREFIX> %%s [origin { igp | egp | incomplete }] [aspath <ASPATH>] [nexthop <ADDRESS>] [med <NUM>] [local-pref <NUM>] [community <COMMUNITY>] [aigp metric <NUM>] [large-community <LARGE_COMMUNITY>] [aggregator <AGGREGATOR>]
-	<ASPATH>: <AS>[,<AS>],
-	<COMMUNITY>: xxx:xxx|internet|planned-shut|accept-own|route-filter-translated-v4|route-filter-v4|route-filter-translated-v6|route-filter-v6|llgr-stale|no-llgr|blackhole|no-export|no-advertise|no-export-subconfed|no-peer,
-	<LARGE_COMMUNITY>: xxx:xxx:xxx[,<LARGE_COMMUNITY>],
-	<AGGREGATOR>: <AS>:<ADDRESS>`,
+    <ASPATH>: <AS>[,<AS>],
+    <COMMUNITY>: xxx:xxx|internet|planned-shut|accept-own|route-filter-translated-v4|route-filter-v4|route-filter-translated-v6|route-filter-v6|llgr-stale|no-llgr|blackhole|no-export|no-advertise|no-export-subconfed|no-peer,
+    <LARGE_COMMUNITY>: xxx:xxx:xxx[,<LARGE_COMMUNITY>],
+    <AGGREGATOR>: <AS>:<ADDRESS>`,
 			err,
 			cmdstr,
 			// <address family>
