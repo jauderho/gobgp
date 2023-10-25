@@ -88,6 +88,33 @@ func Test_IPAddrPrefixString(t *testing.T) {
 	assert.Equal(t, "3343:faba:3903:128::/63", ipv6.String())
 }
 
+func Test_MalformedPrefixLookup(t *testing.T) {
+	assert := assert.New(t)
+
+	var tests = []struct {
+		inPrefix    string
+		routeFamily RouteFamily
+		want        AddrPrefixInterface
+		err         bool
+	}{
+		{"129.6.128/22", RF_IPv4_UC, nil, true},
+		{"foo", RF_IPv4_UC, nil, true},
+		{"3343:faba:3903:128::::/63", RF_IPv6_UC, nil, true},
+		{"foo", RF_IPv6_UC, nil, true},
+	}
+
+	for _, test := range tests {
+		afi, safi := RouteFamilyToAfiSafi(RF_IPv4_UC)
+		p, err := NewPrefixFromRouteFamily(afi, safi, test.inPrefix)
+		if test.err {
+			assert.Error(err)
+		} else {
+			assert.Equal(test.want, p)
+		}
+	}
+
+}
+
 func Test_IPAddrDecode(t *testing.T) {
 	r := IPAddrPrefixDefault{}
 	b := make([]byte, 16)
@@ -1105,6 +1132,38 @@ func Test_MpReachNLRIWithIPv4PrefixWithIPv6Nexthop(t *testing.T) {
 	assert.Equal(bufin, bufout)
 }
 
+func Test_MpReachNLRIWithImplicitPrefix(t *testing.T) {
+	assert := assert.New(t)
+	bufin := []byte{
+		0x80, 0x0e, 0x11, // flags(1), type(1), length(1)
+		0x10,                   // nexthoplen(1)
+		0x20, 0x01, 0x0d, 0xb8, // nexthop(32)
+		0x00, 0x01, 0x00, 0x00, // = "2001:db8:1::1"
+		0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x01,
+	}
+	prefix := NewIPAddrPrefix(24, "192.168.10.0")
+	// Test DecodeFromBytes()
+	p := &PathAttributeMpReachNLRI{}
+	option := &MarshallingOption{ImplicitPrefix: prefix}
+	err := p.DecodeFromBytes(bufin, option)
+	assert.Nil(err)
+	// Test decoded values
+	assert.Equal(BGPAttrFlag(0x80), p.Flags)
+	assert.Equal(BGPAttrType(0xe), p.Type)
+	assert.Equal(uint16(0x11), p.Length)
+	assert.Equal(prefix.AFI(), p.AFI)
+	assert.Equal(prefix.SAFI(), p.SAFI)
+	assert.Equal(net.ParseIP("2001:db8:1::1"), p.Nexthop)
+	value := []AddrPrefixInterface{prefix}
+	assert.Equal(value, p.Value)
+	// Test Serialize()
+	bufout, err := p.Serialize(option)
+	assert.Nil(err)
+	// Test serialised value
+	assert.Equal(bufin, bufout)
+}
+
 func Test_ParseRouteDistinguisher(t *testing.T) {
 	assert := assert.New(t)
 
@@ -1134,6 +1193,155 @@ func Test_ParseRouteDistinguisher(t *testing.T) {
 
 	assert.Equal(uint32((100<<16)|1000), rdType2.Admin)
 	assert.Equal(uint16(10000), rdType2.Assigned)
+}
+
+func TestParseVPNPrefix(t *testing.T) {
+	tests := []struct {
+		name     string
+		prefix   string
+		valid    bool
+		rd       RouteDistinguisherInterface
+		ipPrefix string
+	}{
+		{
+			name:     "test valid RD type 0 VPNv4 prefix",
+			prefix:   "100:100:10.0.0.1/32",
+			valid:    true,
+			rd:       NewRouteDistinguisherTwoOctetAS(uint16(100), uint32(100)),
+			ipPrefix: "10.0.0.1/32",
+		},
+		{
+			name:     "test valid RD type 1 VPNv4 prefix",
+			prefix:   "1.1.1.1:100:10.0.0.1/32",
+			valid:    true,
+			rd:       NewRouteDistinguisherIPAddressAS("1.1.1.1", uint16(100)),
+			ipPrefix: "10.0.0.1/32",
+		},
+		{
+			name:     "test valid RD type 2 VPNv4 prefix",
+			prefix:   "0.54233:100:10.0.0.1/32",
+			valid:    true,
+			rd:       NewRouteDistinguisherFourOctetAS(uint32(54233), uint16(100)),
+			ipPrefix: "10.0.0.1/32",
+		},
+		{
+			name:     "test invalid VPNv4 prefix",
+			prefix:   "100:10.0.0.1/32",
+			valid:    false,
+			rd:       nil,
+			ipPrefix: "",
+		},
+		{
+			name:     "test valid RD type 0 VPNv6 prefix",
+			prefix:   "100:100:100:1::/64",
+			valid:    true,
+			rd:       NewRouteDistinguisherTwoOctetAS(uint16(100), uint32(100)),
+			ipPrefix: "100:1::/64",
+		},
+		{
+			name:     "test valid RD type 1 VPNv6 prefix",
+			prefix:   "1.1.1.1:100:100:1::/64",
+			valid:    true,
+			rd:       NewRouteDistinguisherIPAddressAS("1.1.1.1", uint16(100)),
+			ipPrefix: "100:1::/64",
+		},
+		{
+			name:     "test valid RD type 2 VPNv6 prefix",
+			prefix:   "0.54233:100:100:1::/64",
+			valid:    true,
+			rd:       NewRouteDistinguisherFourOctetAS(uint32(54233), uint16(100)),
+			ipPrefix: "100:1::/64",
+		},
+		{
+			name:     "test invalid VPNv6 prefix",
+			prefix:   "100:1::/64",
+			valid:    false,
+			rd:       nil,
+			ipPrefix: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rd, _, network, err := ParseVPNPrefix(tt.prefix)
+			if !tt.valid {
+				assert.NotNil(t, err)
+				return
+			}
+
+			assert.Nil(t, err)
+			assert.Equal(t, tt.rd, rd)
+			assert.Equal(t, tt.ipPrefix, network.String())
+		})
+	}
+}
+
+func TestContainsCIDR(t *testing.T) {
+	tests := []struct {
+		name    string
+		prefix1 string
+		prefix2 string
+		result  bool
+	}{
+		{
+			name:    "v4 prefix2 is a subnet of prefix1",
+			prefix1: "172.17.0.0/16",
+			prefix2: "172.17.192.0/18",
+			result:  true,
+		},
+		{
+			name:    "v4 prefix2 is a supernet of prefix1",
+			prefix1: "172.17.191.0/18",
+			prefix2: "172.17.0.0/16",
+			result:  false,
+		},
+		{
+			name:    "v4 prefix2 is not a subnet of prefix1",
+			prefix1: "10.10.20.0/30",
+			prefix2: "10.10.30.3/32",
+			result:  false,
+		},
+		{
+			name:    "v4 prefix2 is equal to prefix1",
+			prefix1: "10.10.20.0/30",
+			prefix2: "10.10.20.0/30",
+			result:  true,
+		},
+		{
+			name:    "v6 prefix2 is not a subnet of prefix1",
+			prefix1: "1::/64",
+			prefix2: "2::/72",
+			result:  false,
+		},
+		{
+			name:    "v6 prefix2 is a supernet of prefix1",
+			prefix1: "1::/64",
+			prefix2: "1::/32",
+			result:  false,
+		},
+		{
+			name:    "v6 prefix2 is a subnet of prefix1",
+			prefix1: "1::/64",
+			prefix2: "1::/112",
+			result:  true,
+		},
+		{
+			name:    "v6 prefix2 is equal to prefix1",
+			prefix1: "100:100::/64",
+			prefix2: "100:100::/64",
+			result:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, prefixNet1, _ := net.ParseCIDR(tt.prefix1)
+			_, prefixNet2, _ := net.ParseCIDR(tt.prefix2)
+
+			result := ContainsCIDR(prefixNet1, prefixNet2)
+			assert.Equal(t, tt.result, result)
+		})
+	}
 }
 
 func Test_ParseEthernetSegmentIdentifier(t *testing.T) {
@@ -3506,4 +3714,18 @@ func Test_BGPOpenDecodeCapabilities(t *testing.T) {
 	assert.Len(t, tuples, 1)
 	assert.Equal(t, tuples[0].RouteFamily, RF_IPv4_UC)
 	assert.Equal(t, tuples[0].Mode, BGP_ADD_PATH_SEND)
+}
+
+func FuzzParseBGPMessage(f *testing.F) {
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		ParseBGPMessage(data)
+	})
+}
+
+func FuzzParseFlowSpecComponents(f *testing.F) {
+
+	f.Fuzz(func(t *testing.T, data string) {
+		ParseFlowSpecComponents(RF_FS_IPv4_UC, data)
+	})
 }

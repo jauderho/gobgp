@@ -103,6 +103,296 @@ func TestTableKey(t *testing.T) {
 	assert.Equal(t, len(tb.GetDestinations()), 2)
 }
 
+func TestTableSelectMalformedIPv4UCPrefixes(t *testing.T) {
+	table := NewTable(logger, bgp.RF_IPv4_UC)
+	assert.Equal(t, 0, len(table.GetDestinations()))
+
+	tests := []struct {
+		name   string
+		prefix string
+		option LookupOption
+		found  int
+	}{
+		{
+			name:   "Malformed IPv4 Address",
+			prefix: "2.2.2.2.2",
+			option: LOOKUP_EXACT,
+			found:  0,
+		},
+		{
+			name:   "exact match with RD and prefix that does not exist",
+			prefix: "foo",
+			option: LOOKUP_EXACT,
+			found:  0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			filteredTable, _ := table.Select(
+				TableSelectOption{
+					LookupPrefixes: []*LookupPrefix{{
+						Prefix:       tt.prefix,
+						LookupOption: tt.option,
+					}},
+				},
+			)
+			assert.Equal(t, tt.found, len(filteredTable.GetDestinations()))
+		})
+	}
+}
+
+func TestTableSelectMalformedIPv6UCPrefixes(t *testing.T) {
+	table := NewTable(logger, bgp.RF_IPv6_UC)
+	assert.Equal(t, 0, len(table.GetDestinations()))
+
+	tests := []struct {
+		name   string
+		prefix string
+		option LookupOption
+		found  int
+	}{
+		{
+			name:   "Malformed IPv6 Address: 3343:faba:3903:128::::/63",
+			prefix: "3343:faba:3903:128::::/63",
+			option: LOOKUP_EXACT,
+			found:  0,
+		},
+		{
+			name:   "Malformed IPv6 Address: foo",
+			prefix: "foo",
+			option: LOOKUP_EXACT,
+			found:  0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			filteredTable, _ := table.Select(
+				TableSelectOption{
+					LookupPrefixes: []*LookupPrefix{{
+						Prefix:       tt.prefix,
+						LookupOption: tt.option,
+					}},
+				},
+			)
+			assert.Equal(t, tt.found, len(filteredTable.GetDestinations()))
+		})
+	}
+}
+
+func TestTableSelectVPNv4(t *testing.T) {
+	prefixes := []string{
+		"100:100:2.2.2.0/25",
+		"100:100:2.2.2.2/32",
+		"200:100:2.2.2.2/32",
+		"300:100:2.2.2.2/32",
+		"100:100:2.2.2.3/32",
+		"100:100:2.2.2.4/32",
+		"1.1.1.1:1:2.2.2.5/32",
+		"8732:1:2.2.2.5/32",
+		"8732:1:3.3.3.3/32",
+	}
+
+	table := NewTable(logger, bgp.RF_IPv4_VPN)
+	for _, prefix := range prefixes {
+		nlri, _ := bgp.NewPrefixFromRouteFamily(bgp.AFI_IP, bgp.SAFI_MPLS_VPN, prefix)
+
+		destination := NewDestination(nlri, 0, NewPath(nil, nlri, false, nil, time.Now(), false))
+		table.setDestination(destination)
+	}
+	assert.Equal(t, 9, len(table.GetDestinations()))
+
+	tests := []struct {
+		name   string
+		prefix string
+		RD     string
+		option LookupOption
+		found  int
+	}{
+		{
+			name:   "exact match with RD that does not exist",
+			prefix: "2.2.2.2/32",
+			RD:     "500:500",
+			option: LOOKUP_EXACT,
+			found:  0,
+		},
+		{
+			name:   "exact match with RD and prefix that does not exist",
+			prefix: "4.4.4.4/32",
+			RD:     "100:100",
+			option: LOOKUP_EXACT,
+			found:  0,
+		},
+		{
+			name:   "exact match with RD",
+			prefix: "2.2.2.0/25",
+			RD:     "100:100",
+			option: LOOKUP_EXACT,
+			found:  1,
+		},
+		{
+			name:   "longer match with RD",
+			prefix: "2.2.2.0/25",
+			RD:     "100:100",
+			option: LOOKUP_LONGER,
+			found:  4,
+		},
+		{
+			name:   "shorter match with RD",
+			prefix: "2.2.2.2/32",
+			RD:     "100:100",
+			option: LOOKUP_SHORTER,
+			found:  2,
+		},
+		{
+			name:   "exact match without RD for prefix that does not exist",
+			prefix: "4.4.4.4/32",
+			option: LOOKUP_EXACT,
+			found:  0,
+		},
+		{
+			name:   "exact match without RD",
+			prefix: "2.2.2.2/32",
+			option: LOOKUP_EXACT,
+			found:  3,
+		},
+		{
+			name:   "longer match without RD",
+			prefix: "2.2.2.0/24",
+			option: LOOKUP_LONGER,
+			found:  8,
+		},
+		{
+			name:   "shorter match without RD",
+			prefix: "2.2.2.2/32",
+			option: LOOKUP_SHORTER,
+			found:  4,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			filteredTable, _ := table.Select(
+				TableSelectOption{
+					LookupPrefixes: []*LookupPrefix{{
+						Prefix:       tt.prefix,
+						RD:           tt.RD,
+						LookupOption: tt.option,
+					}},
+				},
+			)
+			assert.Equal(t, tt.found, len(filteredTable.GetDestinations()))
+		})
+	}
+}
+
+func TestTableSelectVPNv6(t *testing.T) {
+	prefixes := []string{
+		"100:100:100::/32",
+		"100:100:100::/64",
+		"100:100:100:1::/64",
+		"100:100:100:2::/64",
+		"200:100:100:2::/64",
+		"300:100:100:2::/64",
+		"100:100:100:3:1::/48",
+		"100:100:100:3:1:2::/64",
+		"100:100:100:2:3:4:5:6::/96",
+	}
+
+	table := NewTable(logger, bgp.RF_IPv6_VPN)
+	for _, prefix := range prefixes {
+		nlri, _ := bgp.NewPrefixFromRouteFamily(bgp.AFI_IP6, bgp.SAFI_MPLS_VPN, prefix)
+
+		destination := NewDestination(nlri, 0, NewPath(nil, nlri, false, nil, time.Now(), false))
+		table.setDestination(destination)
+	}
+	assert.Equal(t, 9, len(table.GetDestinations()))
+
+	tests := []struct {
+		name   string
+		prefix string
+		RD     string
+		option LookupOption
+		found  int
+	}{
+		{
+			name:   "exact match with RD that does not exist",
+			prefix: "100::/32",
+			RD:     "500:500",
+			option: LOOKUP_EXACT,
+			found:  0,
+		},
+		{
+			name:   "exact match with RD and prefix that does not exist",
+			prefix: "200::/32",
+			RD:     "100:100",
+			option: LOOKUP_EXACT,
+			found:  0,
+		},
+		{
+			name:   "exact match with RD",
+			prefix: "100:2::/64",
+			RD:     "100:100",
+			option: LOOKUP_EXACT,
+			found:  1,
+		},
+		{
+			name:   "longer match with RD",
+			prefix: "100::/16",
+			RD:     "100:100",
+			option: LOOKUP_LONGER,
+			found:  7,
+		},
+		{
+			name:   "shorter match with RD",
+			prefix: "100::/96",
+			RD:     "100:100",
+			option: LOOKUP_SHORTER,
+			found:  2,
+		},
+		{
+			name:   "exact match without RD for prefix that does not exist",
+			prefix: "100:5::/64",
+			option: LOOKUP_EXACT,
+			found:  0,
+		},
+		{
+			name:   "exact match without RD",
+			prefix: "100:2::/64",
+			option: LOOKUP_EXACT,
+			found:  3,
+		},
+		{
+			name:   "longer match without RD",
+			prefix: "100:3::/32",
+			option: LOOKUP_LONGER,
+			found:  2,
+		},
+		{
+			name:   "shorter match without RD",
+			prefix: "100:2::/96",
+			option: LOOKUP_SHORTER,
+			found:  3,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			filteredTable, _ := table.Select(
+				TableSelectOption{
+					LookupPrefixes: []*LookupPrefix{{
+						Prefix:       tt.prefix,
+						RD:           tt.RD,
+						LookupOption: tt.option,
+					}},
+				},
+			)
+			assert.Equal(t, tt.found, len(filteredTable.GetDestinations()))
+		})
+	}
+}
+
 func TableCreatePeer() []*PeerInfo {
 	peerT1 := &PeerInfo{AS: 65000}
 	peerT2 := &PeerInfo{AS: 65001}
