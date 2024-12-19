@@ -586,7 +586,7 @@ func getPathAttributeString(nlri bgp.AddrPrefixInterface, attrs []bgp.PathAttrib
 	return fmt.Sprint(s)
 }
 
-func makeShowRouteArgs(p *api.Path, idx int, now time.Time, showAge, showBest, showLabel, showMUP bool, showIdentifier bgp.BGPAddPathMode) []interface{} {
+func makeShowRouteArgs(p *api.Path, idx int, now time.Time, showAge, showBest, showLabel, showMUP, showSendMaxFiltered bool, showIdentifier bgp.BGPAddPathMode) []interface{} {
 	nlri, _ := apiutil.GetNativeNlri(p)
 
 	// Path Symbols (e.g. "*>")
@@ -650,17 +650,27 @@ func makeShowRouteArgs(p *api.Path, idx int, now time.Time, showAge, showBest, s
 	pattrstr := getPathAttributeString(nlri, attrs)
 	args = append(args, pattrstr)
 
+	if showSendMaxFiltered {
+		if p.SendMaxFiltered {
+			args = append(args, "send-max-filtered")
+		} else if p.Filtered {
+			args = append(args, "policy-filtered")
+		} else {
+			args = append(args, "not filtered")
+		}
+	}
+
 	updateColumnWidth(nlri.String(), nexthop, aspathstr, label, teid, qfi, endpoint)
 
 	return args
 }
 
-func showRoute(dsts []*api.Destination, showAge, showBest, showLabel, showMUP bool, showIdentifier bgp.BGPAddPathMode) {
+func showRoute(dsts []*api.Destination, showAge, showBest, showLabel, showMUP, showSendMaxFiltered bool, showIdentifier bgp.BGPAddPathMode) {
 	pathStrs := make([][]interface{}, 0, len(dsts))
 	now := time.Now()
 	for _, dst := range dsts {
 		for idx, p := range dst.Paths {
-			pathStrs = append(pathStrs, makeShowRouteArgs(p, idx, now, showAge, showBest, showLabel, showMUP, showIdentifier))
+			pathStrs = append(pathStrs, makeShowRouteArgs(p, idx, now, showAge, showBest, showLabel, showMUP, showSendMaxFiltered, showIdentifier))
 		}
 	}
 
@@ -689,7 +699,13 @@ func showRoute(dsts []*api.Destination, showAge, showBest, showLabel, showMUP bo
 		format += "%-10s "
 	}
 	headers = append(headers, "Attrs")
-	format += "%-s\n"
+	format += "%-s"
+
+	if showSendMaxFiltered {
+		headers = append(headers, "Filtered")
+		format += "%-s"
+	}
+	format += "\n"
 
 	fmt.Printf(format, headers...)
 	for _, pathStr := range pathStrs {
@@ -839,6 +855,7 @@ func showNeighborRib(r string, name string, args []string) error {
 	showAge := true
 	showLabel := false
 	showMUP := false
+	showSendMaxFiltered := false
 	showIdentifier := bgp.BGP_ADD_PATH_NONE
 	validationTarget := ""
 	rd := ""
@@ -852,6 +869,7 @@ func showNeighborRib(r string, name string, args []string) error {
 		showBest = true
 	case cmdAdjOut:
 		showAge = false
+		showSendMaxFiltered = true
 	case cmdVRF:
 		def = ipv4UC
 		showBest = true
@@ -927,13 +945,19 @@ func showNeighborRib(r string, name string, args []string) error {
 		}
 	}
 
-	var t api.TableType
+	var (
+		t              api.TableType
+		enableFiltered bool
+	)
 	switch r {
 	case cmdGlobal:
 		t = api.TableType_GLOBAL
 	case cmdLocal:
 		t = api.TableType_LOCAL
-	case cmdAdjIn, cmdAccepted, cmdRejected:
+	case cmdAccepted, cmdRejected:
+		enableFiltered = true
+		fallthrough
+	case cmdAdjIn:
 		t = api.TableType_ADJ_IN
 		showIdentifier = bgp.BGP_ADD_PATH_RECEIVE
 	case cmdAdjOut:
@@ -944,11 +968,13 @@ func showNeighborRib(r string, name string, args []string) error {
 	}
 
 	stream, err := client.ListPath(ctx, &api.ListPathRequest{
-		TableType: t,
-		Family:    family,
-		Name:      name,
-		Prefixes:  filter,
-		SortType:  api.ListPathRequest_PREFIX,
+		TableType:      t,
+		Family:         family,
+		Name:           name,
+		Prefixes:       filter,
+		SortType:       api.ListPathRequest_PREFIX,
+		EnableFiltered: enableFiltered,
+		BatchSize:      subOpts.BatchSize,
 	})
 	if err != nil {
 		return err
@@ -1042,23 +1068,19 @@ func showNeighborRib(r string, name string, args []string) error {
 		}
 
 		for _, d := range dsts {
-			switch r {
-			case cmdAccepted:
+			if enableFiltered {
+				showFiltered := r == cmdRejected
 				l := make([]*api.Path, 0, len(d.Paths))
 				for _, p := range d.GetPaths() {
-					if !p.Filtered {
+					if p.Filtered == showFiltered {
 						l = append(l, p)
 					}
 				}
 				d.Paths = l
-			case cmdRejected:
-				// always nothing
-				d.Paths = []*api.Path{}
-			default:
 			}
 		}
 		if len(dsts) > 0 {
-			showRoute(dsts, showAge, showBest, showLabel, showMUP, showIdentifier)
+			showRoute(dsts, showAge, showBest, showLabel, showMUP, showSendMaxFiltered, showIdentifier)
 		} else {
 			fmt.Println("Network not in table")
 		}

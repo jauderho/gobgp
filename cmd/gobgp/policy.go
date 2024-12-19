@@ -95,15 +95,19 @@ func prettyString(v interface{}) string {
 	case *api.LocalPrefAction:
 		return fmt.Sprintf("%d", a.Value)
 	case *api.NexthopAction:
-		if a.Self {
+		switch {
+		case a.Self:
 			return "self"
-		}
-		if a.Unchanged {
+		case a.Unchanged:
 			return "unchanged"
+		case a.PeerAddress:
+			return "peer-address"
 		}
 		return a.Address
 	case *api.AsPrependAction:
 		return fmt.Sprintf("prepend %d %d times", a.Asn, a.Repeat)
+	case *api.OriginAction:
+		return fmt.Sprintf("%v", a.GetOrigin())
 	}
 	return "unknown"
 }
@@ -942,7 +946,7 @@ func modAction(name, op string, args []string) error {
 	case "next-hop":
 		stmt.Actions.Nexthop = &api.NexthopAction{}
 		if len(args) != 1 {
-			return fmt.Errorf("%s next-hop { <value> | self | unchanged }", usage)
+			return fmt.Errorf("%s next-hop { <value> | self | unchanged | peer-address }", usage)
 		}
 		stmt.Actions.Nexthop.Address = args[0]
 	}

@@ -189,10 +189,11 @@ const (
 	EC_SUBTYPE_L2_INFO                 ExtendedCommunityAttrSubType = 0x0A // EC_TYPE: 0x80
 	EC_SUBTYPE_FLOWSPEC_REDIRECT_IP6   ExtendedCommunityAttrSubType = 0x0B // EC_TYPE: 0x80
 
-	EC_SUBTYPE_MAC_MOBILITY ExtendedCommunityAttrSubType = 0x00 // EC_TYPE: 0x06
-	EC_SUBTYPE_ESI_LABEL    ExtendedCommunityAttrSubType = 0x01 // EC_TYPE: 0x06
-	EC_SUBTYPE_ES_IMPORT    ExtendedCommunityAttrSubType = 0x02 // EC_TYPE: 0x06
-	EC_SUBTYPE_ROUTER_MAC   ExtendedCommunityAttrSubType = 0x03 // EC_TYPE: 0x06
+	EC_SUBTYPE_MAC_MOBILITY  ExtendedCommunityAttrSubType = 0x00 // EC_TYPE: 0x06
+	EC_SUBTYPE_ESI_LABEL     ExtendedCommunityAttrSubType = 0x01 // EC_TYPE: 0x06
+	EC_SUBTYPE_ES_IMPORT     ExtendedCommunityAttrSubType = 0x02 // EC_TYPE: 0x06
+	EC_SUBTYPE_ROUTER_MAC    ExtendedCommunityAttrSubType = 0x03 // EC_TYPE: 0x06
+	EC_SUBTYPE_L2_ATTRIBUTES ExtendedCommunityAttrSubType = 0x04 // EC_TYPE: 0x06
 
 	EC_SUBTYPE_UUID_BASED_RT ExtendedCommunityAttrSubType = 0x11
 )
@@ -1013,10 +1014,26 @@ func (c *CapFQDN) DecodeFromBytes(data []byte) error {
 	if len(data) < 2 {
 		return NewMessageError(BGP_ERROR_OPEN_MESSAGE_ERROR, BGP_ERROR_SUB_UNSUPPORTED_CAPABILITY, nil, "Not all CapabilityFQDN bytes allowed")
 	}
+	rest := len(data)
+	if rest < 1 {
+		return NewMessageError(BGP_ERROR_OPEN_MESSAGE_ERROR, BGP_ERROR_SUB_UNSUPPORTED_CAPABILITY, nil, "Not all CapabilityFQDN bytes allowed")
+	}
 	hostNameLen := uint8(data[0])
+	rest -= 1
 	c.HostNameLen = hostNameLen
+	if rest < int(hostNameLen) {
+		return NewMessageError(BGP_ERROR_OPEN_MESSAGE_ERROR, BGP_ERROR_SUB_UNSUPPORTED_CAPABILITY, nil, "Not all CapabilityFQDN bytes allowed")
+	}
 	c.HostName = string(data[1 : c.HostNameLen+1])
+	rest -= int(hostNameLen)
+	if rest < 1 {
+		return NewMessageError(BGP_ERROR_OPEN_MESSAGE_ERROR, BGP_ERROR_SUB_UNSUPPORTED_CAPABILITY, nil, "Not all CapabilityFQDN bytes allowed")
+	}
+	rest -= 1
 	domainNameLen := uint8(data[c.HostNameLen+1])
+	if rest < int(domainNameLen) {
+		return NewMessageError(BGP_ERROR_OPEN_MESSAGE_ERROR, BGP_ERROR_SUB_UNSUPPORTED_CAPABILITY, nil, "Not all CapabilityFQDN bytes allowed")
+	}
 	c.DomainNameLen = domainNameLen
 	c.DomainName = string(data[c.HostNameLen+2:])
 	return nil
@@ -1077,6 +1094,9 @@ func (c *CapSoftwareVersion) DecodeFromBytes(data []byte) error {
 		return NewMessageError(BGP_ERROR_OPEN_MESSAGE_ERROR, BGP_ERROR_SUB_UNSUPPORTED_CAPABILITY, nil, "Not all CapabilitySoftwareVersion bytes allowed")
 	}
 	softwareVersionLen := uint8(data[0])
+	if len(data[1:]) < int(softwareVersionLen) || softwareVersionLen > 64 {
+		return NewMessageError(BGP_ERROR_OPEN_MESSAGE_ERROR, BGP_ERROR_SUB_UNSUPPORTED_CAPABILITY, nil, "invalid length of software version capablity")
+	}
 	c.SoftwareVersionLen = softwareVersionLen
 	c.SoftwareVersion = string(data[1:c.SoftwareVersionLen])
 	return nil
@@ -1566,6 +1586,7 @@ const (
 	BGP_RD_TWO_OCTET_AS = iota
 	BGP_RD_IPV4_ADDRESS
 	BGP_RD_FOUR_OCTET_AS
+	BGP_RD_EOR
 )
 
 type RouteDistinguisherInterface interface {
@@ -3123,7 +3144,7 @@ func (er *EVPNIPPrefixRoute) DecodeFromBytes(data []byte) error {
 	if er.Label, err = labelDecode(data[offset : offset+3]); err != nil {
 		return err
 	}
-	//offset += 3
+	// offset += 3
 
 	return nil
 }
@@ -9617,6 +9638,8 @@ func NewPrefixFromRouteFamily(afi uint16, safi uint8, prefixStr ...string) (pref
 		return NewIPv6AddrPrefix(uint8(len), addr.String()), nil
 	}
 
+	rdEOR := &RouteDistinguisherUnknown{DefaultRouteDistinguisher{Type: BGP_RD_EOR}, []byte("EOR")}
+
 	switch family {
 	case RF_IPv4_UC, RF_IPv4_MC:
 		if len(prefixStr) > 0 {
@@ -9632,7 +9655,7 @@ func NewPrefixFromRouteFamily(afi uint16, safi uint8, prefixStr ...string) (pref
 		}
 	case RF_IPv4_VPN:
 		if len(prefixStr) == 0 {
-			prefix = NewLabeledVPNIPAddrPrefix(0, "", *NewMPLSLabelStack(), nil)
+			prefix = NewLabeledVPNIPAddrPrefix(0, "", *NewMPLSLabelStack(), rdEOR)
 			break
 		}
 
@@ -9651,7 +9674,7 @@ func NewPrefixFromRouteFamily(afi uint16, safi uint8, prefixStr ...string) (pref
 		)
 	case RF_IPv6_VPN:
 		if len(prefixStr) == 0 {
-			prefix = NewLabeledVPNIPv6AddrPrefix(0, "", *NewMPLSLabelStack(), nil)
+			prefix = NewLabeledVPNIPv6AddrPrefix(0, "", *NewMPLSLabelStack(), rdEOR)
 			break
 		}
 
@@ -9857,7 +9880,7 @@ const (
 	BGP_ERROR_SUB_OTHER_CONFIGURATION_CHANGE
 	BGP_ERROR_SUB_CONNECTION_COLLISION_RESOLUTION
 	BGP_ERROR_SUB_OUT_OF_RESOURCES
-	BGP_ERROR_SUB_HARD_RESET //draft-ietf-idr-bgp-gr-notification-07
+	BGP_ERROR_SUB_HARD_RESET // RFC8538
 )
 
 // Constants for BGP_ERROR_SUB_ADMINISTRATIVE_SHUTDOWN and BGP_ERROR_SUB_ADMINISTRATIVE_RESET
@@ -10029,9 +10052,6 @@ func (p *PathAttribute) DecodeFromBytes(data []byte, options ...*MarshallingOpti
 	}
 	p.Flags = BGPAttrFlag(data[0])
 	p.Type = BGPAttrType(data[1])
-	if eMsg := validatePathAttributeFlags(p.Type, p.Flags); eMsg != "" {
-		return nil, NewMessageError(eCode, BGP_ERROR_SUB_ATTRIBUTE_FLAGS_ERROR, data, eMsg)
-	}
 
 	if p.Flags&BGP_ATTR_FLAG_EXTENDED_LENGTH != 0 {
 		if len(data) < 4 {
@@ -10048,6 +10068,10 @@ func (p *PathAttribute) DecodeFromBytes(data []byte, options ...*MarshallingOpti
 	}
 	if len(data) < int(p.Length) {
 		return nil, NewMessageError(eCode, eSubCode, data, "attribute value length is short")
+	}
+
+	if eMsg := validatePathAttributeFlags(p.Type, p.Flags); eMsg != "" {
+		return nil, NewMessageError(eCode, BGP_ERROR_SUB_ATTRIBUTE_FLAGS_ERROR, data, eMsg)
 	}
 
 	return data[:p.Length], nil
@@ -12234,6 +12258,98 @@ func NewRoutersMacExtended(mac string) *RouterMacExtended {
 	}
 }
 
+type Layer2AttributesExtended struct {
+	HasCILabel     bool
+	HasFlowLabel   bool
+	HasControlWord bool
+	IsPrimaryPe    bool
+	IsBackupPe     bool
+	Mtu            uint16
+}
+
+type EvpnControlFlag uint8
+
+const (
+	BACKUP_PE    EvpnControlFlag = 1 << 0
+	PRIMARY_PE   EvpnControlFlag = 1 << 1
+	CONTROL_WORD EvpnControlFlag = 1 << 2
+	FLOW_LABEL   EvpnControlFlag = 1 << 3
+	CI_LABEL     EvpnControlFlag = 1 << 4
+)
+
+func (e *Layer2AttributesExtended) Serialize() ([]byte, error) {
+	buf := make([]byte, 8)
+	buf[0] = byte(EC_TYPE_EVPN)
+	buf[1] = byte(EC_SUBTYPE_L2_ATTRIBUTES)
+
+	if e.IsBackupPe {
+		buf[3] |= uint8(BACKUP_PE)
+	} else if e.IsPrimaryPe {
+		buf[3] |= uint8(PRIMARY_PE)
+	}
+	if e.HasControlWord {
+		buf[3] |= uint8(CONTROL_WORD)
+	}
+	if e.HasFlowLabel {
+		buf[3] |= uint8(FLOW_LABEL)
+	}
+	if e.HasCILabel {
+		buf[3] |= uint8(CI_LABEL)
+	}
+	binary.BigEndian.PutUint16(buf[4:6], e.Mtu)
+	return buf, nil
+}
+
+func (e *Layer2AttributesExtended) String() string {
+	buf := bytes.NewBuffer(make([]byte, 0, 32))
+	buf.WriteString("evpn-l2-info: ")
+	if e.IsPrimaryPe {
+		buf.WriteString("is-primary-pe, ")
+	}
+	if e.IsBackupPe {
+		buf.WriteString("is-backup-pe, ")
+	}
+	if e.HasControlWord {
+		buf.WriteString("control-word, ")
+	}
+	if e.HasFlowLabel {
+		buf.WriteString("flow-label, ")
+	}
+	if e.HasCILabel {
+		buf.WriteString("ci-label, ")
+	}
+
+	buf.WriteString("mtu " + strconv.FormatUint(uint64(e.Mtu), 10))
+	return buf.String()
+}
+
+func (e *Layer2AttributesExtended) MarshalJSON() ([]byte, error) {
+	t, s := e.GetTypes()
+	return json.Marshal(struct {
+		Type        ExtendedCommunityAttrType    `json:"type"`
+		Subtype     ExtendedCommunityAttrSubType `json:"subtype"`
+		CILabel     bool                         `json:"ci_label,omitempty"`
+		FlowLabel   bool                         `json:"flow_label,omitempty"`
+		ControlWord bool                         `json:"control_word,omitempty"`
+		PrimaryPe   bool                         `json:"is_primary_pe,omitempty"`
+		BackupPe    bool                         `json:"is_backup_pe,omitempty"`
+		Mtu         uint16                       `json:"mtu"`
+	}{
+		Type:        t,
+		Subtype:     s,
+		CILabel:     e.HasCILabel,
+		FlowLabel:   e.HasFlowLabel,
+		ControlWord: e.HasControlWord,
+		PrimaryPe:   e.IsPrimaryPe,
+		BackupPe:    e.IsBackupPe,
+		Mtu:         e.Mtu,
+	})
+}
+
+func (e *Layer2AttributesExtended) GetTypes() (ExtendedCommunityAttrType, ExtendedCommunityAttrSubType) {
+	return EC_TYPE_EVPN, EC_SUBTYPE_L2_ATTRIBUTES
+}
+
 func parseEvpnExtended(data []byte) (ExtendedCommunityInterface, error) {
 	if ExtendedCommunityAttrType(data[0]) != EC_TYPE_EVPN {
 		return nil, NewMessageError(BGP_ERROR_UPDATE_MESSAGE_ERROR, BGP_ERROR_SUB_MALFORMED_ATTRIBUTE_LIST, nil, fmt.Sprintf("ext comm type is not EC_TYPE_EVPN: %d", data[0]))
@@ -12268,6 +12384,21 @@ func parseEvpnExtended(data []byte) (ExtendedCommunityInterface, error) {
 		return &RouterMacExtended{
 			Mac: net.HardwareAddr(data[2:8]),
 		}, nil
+	case EC_SUBTYPE_L2_ATTRIBUTES:
+		if flags := data[3]; flags == 0 {
+			return &Layer2AttributesExtended{
+				Mtu: binary.BigEndian.Uint16(data[4:6]),
+			}, nil
+		} else {
+			return &Layer2AttributesExtended{
+				HasCILabel:     flags&uint8(CI_LABEL) > 0,
+				HasFlowLabel:   flags&uint8(FLOW_LABEL) > 0,
+				HasControlWord: flags&uint8(CONTROL_WORD) > 0,
+				IsPrimaryPe:    flags&uint8(PRIMARY_PE) > 0,
+				IsBackupPe:     flags&uint8(BACKUP_PE) > 0,
+				Mtu:            binary.BigEndian.Uint16(data[4:6]),
+			}, nil
+		}
 	}
 	return nil, NewMessageError(BGP_ERROR_UPDATE_MESSAGE_ERROR, BGP_ERROR_SUB_MALFORMED_ATTRIBUTE_LIST, nil, fmt.Sprintf("unknown evpn subtype: %d", subType))
 }
@@ -14519,6 +14650,34 @@ func NewBGPNotificationMessage(errcode uint8, errsubcode uint8, data []byte) *BG
 	}
 }
 
+// RFC8538 makes a suggestion that which Cease notification subcodes should be
+// mapped to the Hard Reset. This function takes a subcode and returns true if
+// the subcode should be treated as a Hard Reset. Otherwise, it returns false.
+//
+// The second argument is a boolean value that indicates whether the Hard Reset
+// should be performed on the Admin Reset. This reflects the RFC8538's
+// suggestion that the implementation should provide a control to treat the
+// Admin Reset as a Hard Reset. When the second argument is true, the function
+// returns true if the subcode is BGP_ERROR_SUB_ADMINISTRATIVE_RESET.
+// Otherwise, it returns false.
+//
+// As RFC8538 states, it is not mandatory to follow this suggestion. You can
+// use this function when you want to follow the suggestion.
+func ShouldHardReset(subcode uint8, hardResetOnAdminReset bool) bool {
+	switch subcode {
+	case BGP_ERROR_SUB_MAXIMUM_NUMBER_OF_PREFIXES_REACHED,
+		BGP_ERROR_SUB_ADMINISTRATIVE_SHUTDOWN,
+		BGP_ERROR_SUB_PEER_DECONFIGURED,
+		BGP_ERROR_SUB_HARD_RESET:
+		return true
+	default:
+		if hardResetOnAdminReset && subcode == BGP_ERROR_SUB_ADMINISTRATIVE_RESET {
+			return true
+		}
+		return false
+	}
+}
+
 type BGPKeepAlive struct {
 }
 
@@ -14832,6 +14991,10 @@ func (e *MacMobilityExtended) Flat() map[string]string {
 }
 
 func (e *RouterMacExtended) Flat() map[string]string {
+	return map[string]string{}
+}
+
+func (e *Layer2AttributesExtended) Flat() map[string]string {
 	return map[string]string{}
 }
 

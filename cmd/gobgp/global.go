@@ -1152,7 +1152,7 @@ func parseTeid(s string) (teid netip.Addr, err error) {
 
 func parseMUPType1SessionTransformedRouteArgs(args []string, afi uint16) (bgp.AddrPrefixInterface, *bgp.PathAttributePrefixSID, []string, error) {
 	// Format:
-	// <ip prefix> rd <rd> [rt <rt>...] teid <teid> qfi <qfi> endpoint <endpoint>
+	// <ip prefix> rd <rd> [rt <rt>...] teid <teid> qfi <qfi> endpoint <endpoint> [source <source>]
 	req := 5
 	if len(args) < req {
 		return nil, nil, nil, fmt.Errorf("%d args required at least, but got %d", req, len(args))
@@ -1163,6 +1163,7 @@ func parseMUPType1SessionTransformedRouteArgs(args []string, afi uint16) (bgp.Ad
 		"teid":     paramSingle,
 		"qfi":      paramSingle,
 		"endpoint": paramSingle,
+		"source":   paramSingle,
 	})
 	if err != nil {
 		return nil, nil, nil, err
@@ -1208,6 +1209,14 @@ func parseMUPType1SessionTransformedRouteArgs(args []string, afi uint16) (bgp.Ad
 		QFI:                   uint8(qfi),
 		EndpointAddressLength: uint8(ea.BitLen()),
 		EndpointAddress:       ea,
+	}
+	if len(m["source"]) > 0 {
+		sa, err := netip.ParseAddr(m["source"][0])
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		r.SourceAddressLength = uint8(sa.BitLen())
+		r.SourceAddress = &sa
 	}
 	return bgp.NewMUPNLRI(afi, bgp.MUP_ARCH_TYPE_UNDEFINED, bgp.MUP_ROUTE_TYPE_TYPE_1_SESSION_TRANSFORMED, r), nil, extcomms, nil
 }
@@ -1879,8 +1888,6 @@ func parsePath(rf bgp.RouteFamily, args []string) (*api.Path, error) {
 			return nil, err
 		}
 
-		extcomms = args[5:]
-
 		if rf == bgp.RF_IPv4_VPN {
 			if ip.To4() == nil {
 				return nil, fmt.Errorf("invalid ipv4 prefix")
@@ -1892,6 +1899,19 @@ func parsePath(rf bgp.RouteFamily, args []string) (*api.Path, error) {
 			}
 			nlri = bgp.NewLabeledVPNIPv6AddrPrefix(uint8(ones), ip.String(), *mpls, rd)
 		}
+
+		args = args[5:]
+
+		if len(args) > 1 && args[0] == "identifier" {
+			id, err := strconv.ParseUint(args[1], 10, 32)
+			if err != nil {
+				return nil, fmt.Errorf("invalid format")
+			}
+			nlri.SetPathIdentifier(uint32(id))
+			args = args[2:]
+		}
+
+		extcomms = args
 	case bgp.RF_IPv4_MPLS, bgp.RF_IPv6_MPLS:
 		if len(args) < 2 {
 			return nil, fmt.Errorf("invalid format")
@@ -2166,7 +2186,7 @@ usage: %s rib %s { a-d <A-D> | macadv <MACADV> | multicast <MULTICAST> | esi <ES
 usage: %s rib %s { isd <ISD> | dsd <DSD> | t1st <T1ST> | t2st <T2ST> } -a mup-ipv4
     <ISD>  : <ip prefix> rd <rd> prefix <prefix> locator-node-length <locator-node-length> function-length <function-length> behavior <behavior> [rt <rt>...]
     <DSD>  : <ip address> rd <rd> prefix <prefix> locator-node-length <locator-node-length> function-length <function-length> behavior <behavior> [rt <rt>...] [mup <segment identifier>]
-    <T1ST> : <ip prefix> rd <rd> [rt <rt>...] teid <teid> qfi <qfi> endpoint <endpoint>
+    <T1ST> : <ip prefix> rd <rd> [rt <rt>...] teid <teid> qfi <qfi> endpoint <endpoint> [source <source>]
     <T2ST> : <endpoint address> rd <rd> [rt <rt>...] endpoint-address-length <endpoint-address-length> teid <teid> [mup <segment identifier>]`,
 			err,
 			cmdstr,
@@ -2176,7 +2196,7 @@ usage: %s rib %s { isd <ISD> | dsd <DSD> | t1st <T1ST> | t2st <T2ST> } -a mup-ip
 usage: %s rib %s { isd <ISD> | dsd <DSD> | t1st <T1ST> | t2st <T2ST> } -a mup-ipv6
     <ISD>  : <ip prefix> rd <rd> prefix <prefix> locator-node-length <locator-node-length> function-length <function-length> behavior <behavior> [rt <rt>...]
     <DSD>  : <ip address> rd <rd> prefix <prefix> locator-node-length <locator-node-length> function-length <function-length> behavior <behavior> [rt <rt>...] [mup <segment identifier>]
-    <T1ST> : <ip prefix> rd <rd> [rt <rt>...] teid <teid> qfi <qfi> endpoint <endpoint>
+    <T1ST> : <ip prefix> rd <rd> [rt <rt>...] teid <teid> qfi <qfi> endpoint <endpoint> [source <source>]
     <T2ST> : <endpoint address> rd <rd> [rt <rt>...] endpoint-address-length <endpoint-address-length> teid <teid> [mup <segment identifier>]`,
 			err,
 			cmdstr,
@@ -2306,6 +2326,7 @@ func newGlobalCmd() *cobra.Command {
 	}
 
 	ribCmd.PersistentFlags().StringVarP(&subOpts.AddressFamily, "address-family", "a", "", "address family")
+	ribCmd.PersistentFlags().Uint64VarP(&subOpts.BatchSize, "batch-size", "b", 0, "Size of the temporary buffer in the server memory. Zero is unlimited (default)")
 
 	for _, v := range []string{cmdAdd, cmdDel} {
 		cmd := &cobra.Command{

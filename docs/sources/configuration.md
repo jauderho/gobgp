@@ -72,16 +72,16 @@
         allow-own-as = 1
         replace-peer-as = true
     [neighbors.timers.config]
-        connect-retry = 5
-        hold-time = 9
-        keepalive-interval = 3
+        connect-retry = 5 #unit of measurement is seconds
+        hold-time = 9 #unit of measurement is seconds
+        keepalive-interval = 3 #unit of measurement is seconds
     [neighbors.transport.config]
         passive-mode = true
         local-address = "192.168.10.1"
         remote-port = 2016
         ttl = 64  # default value on Linux
     [neighbors.ebgp-multihop.config]
-        enabled = true
+        enabled = true #directly connection should be set false，if not ，peer will be deleted after hold-time
         multihop-ttl = 100
     [neighbors.route-reflector.config]
         route-reflector-client = true
@@ -172,10 +172,16 @@
     #    enabled = true
     #    ttl-min = 255  # 255 means directly connected
 
+[[neighbors]]
+    [neighbors.config]
+        peer-group = "my-peer-group"
+        neighbor-address = "127.0.0.2"
+
 [[peer-groups]]
   [peer-groups.config]
     peer-group-name = "my-peer-group"
     peer-as = 65000
+    send-software-version = true
   [[peer-groups.afi-safis]]
     [peer-groups.afi-safis.config]
       afi-safi-name = "ipv4-unicast"
